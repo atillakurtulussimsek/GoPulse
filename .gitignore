@@ -31,6 +31,13 @@ go.work.sum
 # .idea/
 # .vscode/
 
+# --- Frontend derleme araçları (repo node'suz kalır) ---
+# Tailwind CSS yalnızca bir derleme aracıdır; çıktı app.css commit edilir,
+# node bağımlılıkları edilmez.
+node_modules/
+package.json
+package-lock.json
+
 # --- GoPulse çalışma zamanı verileri ---
 # SQLite veritabanı ve çalışma anında oluşan dosyalar
 data/

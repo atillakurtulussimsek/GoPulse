@@ -1,0 +1,12 @@
+/*
+ * GoPulse — Tailwind CSS giriş dosyası.
+ *
+ * Derleme (çıktı: internal/web/static/app.css, binary'ye go:embed ile gömülür):
+ *   make css
+ *
+ * @source, Tailwind'in hangi dosyalardaki sınıfları tarayacağını belirtir;
+ * yalnızca kullanılan yardımcı sınıflar üretilir (minimal çıktı).
+ */
+@import "tailwindcss";
+
+@source "../templates/**/*.html";

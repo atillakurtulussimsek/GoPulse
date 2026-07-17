@@ -1,0 +1,57 @@
+{{define "monitor_table"}}
+{{if not .Monitors}}
+<div class="rounded-xl border border-dashed border-slate-800 bg-slate-900/30 p-10 text-center text-slate-500">
+    Henüz izleme eklenmedi. Yukarıdaki formu kullanarak ilk izlemeni oluştur.
+</div>
+{{else}}
+<div class="overflow-hidden rounded-xl border border-slate-800">
+    <table class="w-full text-left text-sm">
+        <thead class="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+                <th class="px-4 py-3 font-medium">İzleme</th>
+                <th class="px-4 py-3 font-medium">Tür</th>
+                <th class="px-4 py-3 font-medium">Durum</th>
+                <th class="px-4 py-3 font-medium">Gecikme</th>
+                <th class="px-4 py-3 font-medium">Uptime (24s)</th>
+                <th class="px-4 py-3 font-medium">Son Kontrol</th>
+                <th class="px-4 py-3 text-right font-medium">İşlem</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800">
+            {{range .Monitors}}
+            <tr class="bg-slate-900/30 transition hover:bg-slate-900/60 {{if not .Monitor.Enabled}}opacity-50{{end}}">
+                <td class="px-4 py-3">
+                    <div class="font-medium text-slate-200">{{.Monitor.Name}}</div>
+                    <div class="text-xs text-slate-500">{{.Monitor.Target}}</div>
+                </td>
+                <td class="px-4 py-3">
+                    <span class="rounded bg-slate-800 px-2 py-0.5 text-xs uppercase text-slate-400">{{.Monitor.Type}}</span>
+                </td>
+                <td class="px-4 py-3">
+                    <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset {{statusClasses .LastStatus}}">
+                        {{statusLabel .LastStatus}}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-slate-400">{{latencyText .LastLatency}}</td>
+                <td class="px-4 py-3 text-slate-400">{{uptimeText .Total24h .Uptime24h}}</td>
+                <td class="px-4 py-3 text-slate-400">{{timeText .LastCheckedAt}}</td>
+                <td class="px-4 py-3">
+                    <div class="flex items-center justify-end gap-2">
+                        <button hx-post="/monitors/{{.Monitor.ID}}/toggle" hx-target="#monitor-list" hx-swap="innerHTML"
+                                class="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 transition hover:border-slate-500 hover:text-white">
+                            {{if .Monitor.Enabled}}Duraklat{{else}}Sürdür{{end}}
+                        </button>
+                        <button hx-delete="/monitors/{{.Monitor.ID}}" hx-target="#monitor-list" hx-swap="innerHTML"
+                                hx-confirm="'{{.Monitor.Name}}' izlemesi ve tüm geçmişi silinsin mi?"
+                                class="rounded-md border border-rose-900/60 px-2 py-1 text-xs text-rose-400 transition hover:border-rose-500 hover:text-rose-300">
+                            Sil
+                        </button>
+                    </div>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+{{end}}

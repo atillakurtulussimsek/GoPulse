@@ -50,7 +50,7 @@ func main() {
 	log.Printf("scheduler başlatıldı: %d worker, dispatch %s", cfg.Workers, cfg.DispatchInterval)
 
 	// Web sunucusunu oluştur.
-	srv, err := web.NewServer(cfg)
+	srv, err := web.NewServer(cfg, store)
 	if err != nil {
 		log.Fatalf("web sunucusu oluşturulamadı: %v", err)
 	}

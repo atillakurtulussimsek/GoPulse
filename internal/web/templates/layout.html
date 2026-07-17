@@ -1,0 +1,18 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="tr" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoPulse — Uptime İzleme</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <!-- HTMX (CDN — sürüm sabitli) -->
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.3/dist/htmx.min.js"
+            integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq"
+            crossorigin="anonymous"></script>
+</head>
+<body class="h-full bg-slate-950 text-slate-200 antialiased">
+    <div class="mx-auto max-w-5xl px-4 py-8 sm:px-6">
+        {{template "dashboard" .}}
+    </div>
+</body>
+</html>{{end}}
