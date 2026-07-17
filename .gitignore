@@ -30,3 +30,21 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# --- GoPulse çalışma zamanı verileri ---
+# SQLite veritabanı ve çalışma anında oluşan dosyalar
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# --- YAPAY ZEKA YÖNETİMLİ DOSYALAR (Kural 3 — ASLA commit edilmez) ---
+# Projenin AI iç süreçleri, promptları ve yerel hafıza bankası public repoya sızmamalıdır.
+CLAUDE.md
+.claude/
+.claudecodesettings
+.claude-code-settings
+memory-bank/
+.aider*
+.cursorrules

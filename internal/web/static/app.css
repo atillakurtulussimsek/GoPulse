@@ -1,0 +1,45 @@
+/*
+ * GoPulse — geçici temel stiller.
+ *
+ * NOT: Kalıcı tasarım, sonraki milestone'da Tailwind CSS ile derlenip bu
+ * dosyanın yerini alacaktır. Şimdilik sunucunun statik dosya sunumunu
+ * doğrulamak için minimal bir stil tutulmaktadır.
+ */
+:root {
+    --bg: #0f172a;
+    --fg: #e2e8f0;
+    --accent: #38bdf8;
+    --muted: #64748b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 3rem 1.5rem;
+}
+
+h1 {
+    margin: 0;
+    font-size: 2.25rem;
+    color: var(--accent);
+}
+
+.tagline {
+    margin: 0.25rem 0 2rem;
+    color: var(--muted);
+}
+
+footer {
+    margin-top: 3rem;
+    color: var(--muted);
+}
