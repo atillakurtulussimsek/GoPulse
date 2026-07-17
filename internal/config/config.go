@@ -19,6 +19,13 @@ type Config struct {
 
 	// Bir izlemenin varsayılan kontrol aralığı.
 	DefaultInterval time.Duration
+
+	// RetentionDays, check_results kayıtlarının kaç gün saklanacağıdır.
+	// Bu süreden eski kayıtlar pruning ile silinir.
+	RetentionDays int
+
+	// PruneInterval, pruning görevinin çalışma sıklığıdır.
+	PruneInterval time.Duration
 }
 
 // Load, ortam değişkenlerinden konfigürasyonu okur ve makul
@@ -28,6 +35,8 @@ func Load() Config {
 		ListenAddr:      getEnv("GOPULSE_LISTEN_ADDR", ":8080"),
 		DatabasePath:    getEnv("GOPULSE_DB_PATH", "data/gopulse.db"),
 		DefaultInterval: getEnvDuration("GOPULSE_DEFAULT_INTERVAL", 60*time.Second),
+		RetentionDays:   getEnvInt("GOPULSE_RETENTION_DAYS", 30),
+		PruneInterval:   getEnvDuration("GOPULSE_PRUNE_INTERVAL", 24*time.Hour),
 	}
 }
 
@@ -35,6 +44,17 @@ func Load() Config {
 func getEnv(key, fallback string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		return v
+	}
+	return fallback
+}
+
+// getEnvInt, tam sayı biçimindeki bir ortam değişkenini ayrıştırır.
+// Geçersiz veya tanımsızsa fallback döner.
+func getEnvInt(key string, fallback int) int {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

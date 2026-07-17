@@ -15,11 +15,28 @@ import (
 
 	"github.com/atillakurtulussimsek/GoPulse/internal/checker"
 	"github.com/atillakurtulussimsek/GoPulse/internal/config"
+	"github.com/atillakurtulussimsek/GoPulse/internal/database"
 	"github.com/atillakurtulussimsek/GoPulse/internal/web"
 )
 
 func main() {
 	cfg := config.Load()
+
+	// Veritabanını aç; migration'lar otomatik uygulanır.
+	store, err := database.Open(cfg.DatabasePath)
+	if err != nil {
+		log.Fatalf("veritabanı açılamadı: %v", err)
+	}
+	defer store.Close()
+	log.Printf("veritabanı hazır: %s", cfg.DatabasePath)
+
+	// Uygulama ömrü boyunca geçerli bağlam (pruning gibi arka plan
+	// görevlerini kapanışta durdurur).
+	appCtx, appCancel := context.WithCancel(context.Background())
+	defer appCancel()
+
+	// Periyodik pruning görevini başlat (yaş bazlı log budama).
+	go store.StartPruningLoop(appCtx, cfg.PruneInterval, cfg.RetentionDays)
 
 	// Checker registry'sini kur ve mevcut izleme türlerini kaydet.
 	// (Scheduler bir sonraki milestone'da bu registry'yi kullanacak.)
