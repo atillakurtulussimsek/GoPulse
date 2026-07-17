@@ -16,6 +16,7 @@ import (
 	"github.com/atillakurtulussimsek/GoPulse/internal/checker"
 	"github.com/atillakurtulussimsek/GoPulse/internal/config"
 	"github.com/atillakurtulussimsek/GoPulse/internal/database"
+	"github.com/atillakurtulussimsek/GoPulse/internal/scheduler"
 	"github.com/atillakurtulussimsek/GoPulse/internal/web"
 )
 
@@ -39,10 +40,14 @@ func main() {
 	go store.StartPruningLoop(appCtx, cfg.PruneInterval, cfg.RetentionDays)
 
 	// Checker registry'sini kur ve mevcut izleme türlerini kaydet.
-	// (Scheduler bir sonraki milestone'da bu registry'yi kullanacak.)
 	registry := checker.NewRegistry()
-	registry.Register(checker.NewHTTPChecker(10 * time.Second))
-	registry.Register(checker.NewTCPChecker(10 * time.Second))
+	registry.Register(checker.NewHTTPChecker(cfg.CheckTimeout))
+	registry.Register(checker.NewTCPChecker(cfg.CheckTimeout))
+
+	// Scheduler'ı başlat: aktif monitörleri aralıklarına göre çalıştırır.
+	sched := scheduler.New(store, registry, cfg)
+	go sched.Run(appCtx)
+	log.Printf("scheduler başlatıldı: %d worker, dispatch %s", cfg.Workers, cfg.DispatchInterval)
 
 	// Web sunucusunu oluştur.
 	srv, err := web.NewServer(cfg)
