@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atillakurtulussimsek/GoPulse/internal/auth"
 	"github.com/atillakurtulussimsek/GoPulse/internal/config"
 	"github.com/atillakurtulussimsek/GoPulse/internal/database"
 	"github.com/atillakurtulussimsek/GoPulse/internal/models"
@@ -20,8 +21,15 @@ import (
 type Server struct {
 	cfg       config.Config
 	store     *database.Store
+	auth      *auth.Manager
 	templates *template.Template
 	mux       *http.ServeMux
+}
+
+// authPageData, login/setup şablonlarına aktarılan görünüm modelidir.
+type authPageData struct {
+	Error string
+	Email string
 }
 
 // dashboardData, panel şablonlarına aktarılan görünüm modelidir.
@@ -39,6 +47,7 @@ func NewServer(cfg config.Config, store *database.Store) (*Server, error) {
 	s := &Server{
 		cfg:       cfg,
 		store:     store,
+		auth:      auth.New(store, cfg.SessionTTL),
 		templates: tmpl,
 		mux:       http.NewServeMux(),
 	}
@@ -56,13 +65,44 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
-	s.mux.HandleFunc("GET /{$}", s.handleIndex)
 
-	// Monitör CRUD (HTMX). Yanıtlar güncel tabloyu (partial) döndürür.
-	s.mux.HandleFunc("GET /partials/monitors", s.handleMonitorTable)
-	s.mux.HandleFunc("POST /monitors", s.handleCreateMonitor)
-	s.mux.HandleFunc("DELETE /monitors/{id}", s.handleDeleteMonitor)
-	s.mux.HandleFunc("POST /monitors/{id}/toggle", s.handleToggleMonitor)
+	// Kimlik doğrulama uçları (korumasız).
+	s.mux.HandleFunc("GET /setup", s.handleSetupForm)
+	s.mux.HandleFunc("POST /setup", s.handleSetup)
+	s.mux.HandleFunc("GET /login", s.handleLoginForm)
+	s.mux.HandleFunc("POST /login", s.handleLogin)
+	s.mux.HandleFunc("POST /logout", s.handleLogout)
+
+	// Korumalı rotalar (oturum zorunlu).
+	s.mux.HandleFunc("GET /{$}", s.requireAuth(s.handleIndex))
+	s.mux.HandleFunc("GET /partials/monitors", s.requireAuth(s.handleMonitorTable))
+	s.mux.HandleFunc("POST /monitors", s.requireAuth(s.handleCreateMonitor))
+	s.mux.HandleFunc("DELETE /monitors/{id}", s.requireAuth(s.handleDeleteMonitor))
+	s.mux.HandleFunc("POST /monitors/{id}/toggle", s.requireAuth(s.handleToggleMonitor))
+}
+
+// requireAuth, korumalı bir handler'ı oturum kontrolüyle sarar. Hiç kullanıcı
+// yoksa /setup'a, oturum yoksa /login'e yönlendirir.
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		has, err := s.auth.HasUsers()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !has {
+			http.Redirect(w, r, "/setup", http.StatusSeeOther)
+			return
+		}
+		if _, ok, err := s.auth.Authenticate(s.sessionToken(r)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // handleIndex, ana panel sayfasını render eder.
@@ -170,6 +210,127 @@ func (s *Server) handleToggleMonitor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderMonitorTable(w)
+}
+
+// handleSetupForm, ilk kurulum ekranını gösterir. Zaten kullanıcı varsa
+// /login'e yönlendirir.
+func (s *Server) handleSetupForm(w http.ResponseWriter, r *http.Request) {
+	if has, err := s.auth.HasUsers(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if has {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	s.renderAuthPage(w, "setup", authPageData{}, http.StatusOK)
+}
+
+// handleSetup, ilk yönetici kullanıcıyı oluşturur ve oturum açar.
+func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "form okunamadı", http.StatusBadRequest)
+		return
+	}
+	email := r.FormValue("email")
+	password := r.FormValue("password")
+
+	token, expires, err := s.auth.Setup(email, password)
+	if err != nil {
+		s.renderAuthPage(w, "setup", authPageData{Error: err.Error(), Email: email}, http.StatusBadRequest)
+		return
+	}
+	s.setSessionCookie(w, token, expires)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleLoginForm, giriş ekranını gösterir. Zaten oturum açıksa panele
+// yönlendirir; hiç kullanıcı yoksa /setup'a.
+func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
+	has, err := s.auth.HasUsers()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !has {
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
+	if _, ok, _ := s.auth.Authenticate(s.sessionToken(r)); ok {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderAuthPage(w, "login", authPageData{}, http.StatusOK)
+}
+
+// handleLogin, kimlik bilgilerini doğrular ve oturum açar.
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "form okunamadı", http.StatusBadRequest)
+		return
+	}
+	email := r.FormValue("email")
+	password := r.FormValue("password")
+
+	token, expires, err := s.auth.Login(email, password)
+	if err != nil {
+		s.renderAuthPage(w, "login", authPageData{Error: err.Error(), Email: email}, http.StatusUnauthorized)
+		return
+	}
+	s.setSessionCookie(w, token, expires)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleLogout, oturumu sonlandırır ve cookie'yi temizler.
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if err := s.auth.Logout(s.sessionToken(r)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.clearSessionCookie(w)
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+// renderAuthPage, login/setup tam sayfasını render eder.
+func (s *Server) renderAuthPage(w http.ResponseWriter, name string, data authPageData, status int) {
+	w.WriteHeader(status)
+	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// sessionToken, istekteki oturum cookie'sinin değerini döndürür (yoksa boş).
+func (s *Server) sessionToken(r *http.Request) string {
+	c, err := r.Cookie(auth.SessionCookieName)
+	if err != nil {
+		return ""
+	}
+	return c.Value
+}
+
+// setSessionCookie, oturum cookie'sini ayarlar.
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expires time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     auth.SessionCookieName,
+		Value:    token,
+		Path:     "/",
+		Expires:  expires,
+		HttpOnly: true,
+		Secure:   s.cfg.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// clearSessionCookie, oturum cookie'sini siler.
+func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     auth.SessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   s.cfg.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 // handleHealthz, basit bir sağlık kontrolü ucudur.

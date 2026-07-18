@@ -6,6 +6,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,6 +37,13 @@ type Config struct {
 	// DispatchInterval, dispatcher'ın sırası gelmiş monitörleri taradığı
 	// aralıktır. Monitör interval'larından küçük tutulmalıdır.
 	DispatchInterval time.Duration
+
+	// SessionTTL, bir oturumun geçerlilik süresidir.
+	SessionTTL time.Duration
+
+	// CookieSecure, oturum cookie'sine Secure bayrağı eklenip eklenmeyeceğidir.
+	// HTTPS arkasında true yapılmalıdır.
+	CookieSecure bool
 }
 
 // Load, ortam değişkenlerinden konfigürasyonu okur ve makul
@@ -50,6 +58,8 @@ func Load() Config {
 		Workers:          getEnvInt("GOPULSE_WORKERS", 10),
 		CheckTimeout:     getEnvDuration("GOPULSE_CHECK_TIMEOUT", 10*time.Second),
 		DispatchInterval: getEnvDuration("GOPULSE_DISPATCH_INTERVAL", 5*time.Second),
+		SessionTTL:       getEnvDuration("GOPULSE_SESSION_TTL", 7*24*time.Hour),
+		CookieSecure:     getEnvBool("GOPULSE_COOKIE_SECURE", false),
 	}
 }
 
@@ -67,6 +77,20 @@ func getEnvInt(key string, fallback int) int {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+// getEnvBool, boolean biçimindeki bir ortam değişkenini ayrıştırır
+// (1/t/true/yes → true). Geçersiz veya tanımsızsa fallback döner.
+func getEnvBool(key string, fallback bool) bool {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "t", "true", "yes", "y", "on":
+			return true
+		case "0", "f", "false", "no", "n", "off":
+			return false
 		}
 	}
 	return fallback

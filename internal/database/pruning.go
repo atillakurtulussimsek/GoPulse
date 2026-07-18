@@ -38,10 +38,15 @@ func (s *Store) StartPruningLoop(ctx context.Context, interval time.Duration, re
 		deleted, err := s.Prune(retentionDays)
 		if err != nil {
 			log.Printf("pruning hatası: %v", err)
-			return
-		}
-		if deleted > 0 {
+		} else if deleted > 0 {
 			log.Printf("pruning: %d eski kontrol sonucu silindi", deleted)
+		}
+
+		// Süresi dolmuş oturumları da temizle.
+		if sessions, err := s.DeleteExpiredSessions(time.Now().UTC()); err != nil {
+			log.Printf("oturum temizleme hatası: %v", err)
+		} else if sessions > 0 {
+			log.Printf("pruning: %d süresi dolmuş oturum silindi", sessions)
 		}
 	}
 

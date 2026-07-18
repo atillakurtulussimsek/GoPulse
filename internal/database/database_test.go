@@ -1,12 +1,24 @@
 package database
 
 import (
+	"io/fs"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/atillakurtulussimsek/GoPulse/internal/models"
 )
+
+// migrationCount, gömülü migration dosyalarının sayısını döndürür (testlerin
+// migration sayısına sabitlenmemesi için).
+func migrationCount(t *testing.T) int {
+	t.Helper()
+	entries, err := fs.ReadDir(migrationFS, "migrations")
+	if err != nil {
+		t.Fatalf("migration dosyaları okunamadı: %v", err)
+	}
+	return len(entries)
+}
 
 // openTestStore, testler için geçici dizinde izole bir SQLite Store açar.
 func openTestStore(t *testing.T) *Store {
@@ -30,12 +42,14 @@ func TestMigrationIdempotent(t *testing.T) {
 		t.Fatalf("ilk Open başarısız: %v", err)
 	}
 
-	var version int
-	if err := s1.DB().QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
-		t.Fatalf("versiyon okunamadı: %v", err)
+	expected := migrationCount(t)
+
+	var count int
+	if err := s1.DB().QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
+		t.Fatalf("migration sayısı okunamadı: %v", err)
 	}
-	if version != 1 {
-		t.Fatalf("beklenen versiyon 1, gelen %d", version)
+	if count != expected {
+		t.Fatalf("tüm migration'lar uygulanmalı: beklenen %d, gelen %d", expected, count)
 	}
 	_ = s1.Close()
 
@@ -46,12 +60,11 @@ func TestMigrationIdempotent(t *testing.T) {
 	}
 	defer s2.Close()
 
-	var count int
 	if err := s2.DB().QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("migration sayısı okunamadı: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("migration tek kez kaydedilmeli, bulunan %d", count)
+	if count != expected {
+		t.Fatalf("migration'lar tek kez kaydedilmeli: beklenen %d, bulunan %d", expected, count)
 	}
 }
 
