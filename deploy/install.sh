@@ -6,6 +6,8 @@
 #   - Gerekli araçları (git, curl) ve Go'yu (yoksa/eskiyse) hazırlar
 #   - Projeyi GitHub'dan çeker (veya mevcut kopyayı günceller)
 #   - CGO'suz statik binary'yi derler
+#   - Port çakışmasını kontrol eder (dolu ise durur ve boş port önerir;
+#     GOPULSE_AUTO_PORT=true ile otomatik boş port seçer)
 #   - Bir systemd servisi olarak kurar ve başlatır
 #
 # İdempotent: zaten kuruluysa YALNIZCA kodu günceller; veritabanına
@@ -39,6 +41,11 @@ UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 # Çalışma ayarları (HTTPS reverse proxy arkasında).
 LISTEN_ADDR="${GOPULSE_LISTEN_ADDR:-127.0.0.1:8080}"
 COOKIE_SECURE="${GOPULSE_COOKIE_SECURE:-true}"
+
+# Seçilen port başka bir process tarafından tutuluyorsa:
+#   false (varsayılan) → durur ve boş bir port önerir
+#   true               → otomatik olarak bir sonraki boş portu seçer
+AUTO_PORT="${GOPULSE_AUTO_PORT:-false}"
 
 # Go yoksa/eskiyse kurulacak sürüm.
 GO_VERSION="${GOPULSE_GO_VERSION:-1.23.12}"
@@ -152,6 +159,72 @@ build_binary() {
 	ok "Derlendi: $BIN_PATH"
 }
 
+# Bir TCP portunun dinlenip dinlenmediğini kontrol eder (ss → lsof → /dev/tcp).
+port_in_use() {
+	local p="$1"
+	if command -v ss >/dev/null 2>&1; then
+		ss -Htln "sport = :$p" 2>/dev/null | grep -q . && return 0 || return 1
+	elif command -v lsof >/dev/null 2>&1; then
+		lsof -iTCP:"$p" -sTCP:LISTEN -t >/dev/null 2>&1 && return 0 || return 1
+	else
+		(exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null && { exec 3>&- 3<&-; return 0; } || return 1
+	fi
+}
+
+# Verilen porttan başlayarak ilk boş portu döndürür.
+find_free_port() {
+	local start="$1" p
+	for p in $(seq "$start" $((start + 50))); do
+		port_in_use "$p" || { echo "$p"; return 0; }
+	done
+	return 1
+}
+
+# Yapılandırılan portun uygunluğunu doğrular. Kendi servisimiz güncelleniyorsa
+# (portu zaten biz tutuyoruz) çakışma sayılmaz. Başka bir process tutuyorsa
+# AUTO_PORT davranışına göre ya otomatik boş port seçilir ya da durulur.
+check_port() {
+	local port host
+	port="${LISTEN_ADDR##*:}"
+	if [ "$LISTEN_ADDR" = ":$port" ]; then host=""; else host="${LISTEN_ADDR%:*}"; fi
+
+	# Güncelleme: gopulse servisi zaten çalışıyorsa portu biz tutuyoruzdur.
+	if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+		ok "Port kontrolü atlandı (gopulse servisi zaten çalışıyor — güncelleme)."
+		return
+	fi
+
+	if ! port_in_use "$port"; then
+		ok "Port uygun: ${LISTEN_ADDR}"
+		return
+	fi
+
+	# Port başka bir process tarafından kullanılıyor.
+	local suggestion
+	suggestion="$(find_free_port "$port" || true)"
+
+	if [ "$AUTO_PORT" = "true" ] && [ -n "$suggestion" ]; then
+		if [ -z "$host" ]; then LISTEN_ADDR=":$suggestion"; else LISTEN_ADDR="${host}:${suggestion}"; fi
+		warn "Port $port dolu; GOPULSE_AUTO_PORT=true → otomatik olarak $suggestion kullanılıyor."
+		warn "Reverse proxy hedefini ${LISTEN_ADDR} olarak güncelleyin."
+		return
+	fi
+
+	printf '\033[1;31mHATA:\033[0m %s\n' "Port $port kullanımda (başka bir process tutuyor)." >&2
+	if [ -n "$suggestion" ]; then
+		local sample_host="${host:-127.0.0.1}"
+		echo "  Boş bir port bulundu: $suggestion" >&2
+		echo "  Bu portla tekrar çalıştırın:" >&2
+		echo "    sudo GOPULSE_LISTEN_ADDR=${sample_host}:${suggestion} bash install.sh" >&2
+		echo "  veya otomatik seçim için:" >&2
+		echo "    sudo GOPULSE_AUTO_PORT=true bash install.sh" >&2
+	else
+		echo "  Yakında boş port bulunamadı; farklı bir port belirtin:" >&2
+		echo "    sudo GOPULSE_LISTEN_ADDR=127.0.0.1:9090 bash install.sh" >&2
+	fi
+	exit 1
+}
+
 write_unit() {
 	log "systemd birimi yazılıyor: $UNIT_PATH"
 	cat > "$UNIT_PATH" <<UNIT
@@ -231,6 +304,7 @@ main() {
 	ensure_user
 	fetch_source
 	build_binary
+	check_port
 	write_unit
 	set_permissions
 	start_service

@@ -72,6 +72,15 @@ Script **idempotent**'tir: proje zaten kuruluysa yalnızca kodu günceller
 ve ayarlanabilir değişkenler için [`deploy/install.sh`](deploy/install.sh)
 başındaki yapılandırma bölümüne bakın.
 
+**Port çakışması:** Seçilen port başka bir process tarafından kullanılıyorsa
+script durur ve boş bir port önerir. Farklı port vermek için:
+
+```bash
+curl -fsSL .../install.sh | sudo GOPULSE_LISTEN_ADDR=127.0.0.1:9090 bash
+# veya otomatik boş port seçimi için:
+curl -fsSL .../install.sh | sudo GOPULSE_AUTO_PORT=true bash
+```
+
 > HTTPS reverse proxy (nginx/Caddy) arkasında çalışacak şekilde ayarlıdır
 > (`GOPULSE_COOKIE_SECURE=true`, `127.0.0.1:8080`).
 
