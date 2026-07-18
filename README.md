@@ -57,10 +57,25 @@ docker run -d --name gopulse \
 Veri (SQLite) `/data` hacminde kalıcıdır. İmaj `distroless/static` tabanlıdır
 (kabuk yok, nonroot kullanıcı, minimum saldırı yüzeyi).
 
-### systemd
+### systemd (otomatik kurulum/güncelleme script'i)
 
-Örnek servis birimi ve kurulum adımları için
-[`deploy/gopulse.service`](deploy/gopulse.service) dosyasına bakın.
+Sunucuya tek komutla kurmak veya güncellemek için (kaynaktan derler, systemd
+servisi olarak kurar ve başlatır):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/atillakurtulussimsek/GoPulse/main/deploy/install.sh | sudo bash
+```
+
+Script **idempotent**'tir: proje zaten kuruluysa yalnızca kodu günceller
+(git pull + yeniden derleme + servis yeniden başlatma) ve **veritabanına
+(`/var/lib/gopulse`) dokunmaz**. Go kurulu değilse otomatik kurar. Ayrıntılar
+ve ayarlanabilir değişkenler için [`deploy/install.sh`](deploy/install.sh)
+başındaki yapılandırma bölümüne bakın.
+
+> HTTPS reverse proxy (nginx/Caddy) arkasında çalışacak şekilde ayarlıdır
+> (`GOPULSE_COOKIE_SECURE=true`, `127.0.0.1:8080`).
+
+Elle kurulum için örnek birim: [`deploy/gopulse.service`](deploy/gopulse.service).
 
 ## Yapılandırma (ortam değişkenleri)
 
