@@ -17,6 +17,13 @@ import (
 	"github.com/atillakurtulussimsek/GoPulse/internal/models"
 )
 
+// StatusChangeHandler, bir monitörün durumu değiştiğinde bilgilendirilir.
+// Notifier dispatcher bu arayüzü karşılar; scheduler'ı bildirim katmanından
+// ayrık tutar (yapısal uyum).
+type StatusChangeHandler interface {
+	OnStatusChange(monitor models.Monitor, prev, curr models.Status, message string)
+}
+
 // Scheduler, izleme çalıştırma döngüsünü yönetir.
 type Scheduler struct {
 	store    *database.Store
@@ -29,13 +36,17 @@ type Scheduler struct {
 
 	jobs chan models.Monitor
 
+	// onChange, durum değişikliğinde bilgilendirilecek handler (nil olabilir).
+	onChange StatusChangeHandler
+
 	// nextRun, her monitörün bir sonraki kontrol zamanını tutar. Yalnızca
 	// dispatch goroutine'i tarafından okunup yazılır; bu yüzden kilit gerekmez.
 	nextRun map[int64]time.Time
 }
 
 // New, verilen bağımlılıklar ve konfigürasyonla bir Scheduler oluşturur.
-func New(store *database.Store, registry *checker.Registry, cfg config.Config) *Scheduler {
+// onChange nil olabilir (bildirim istenmiyorsa).
+func New(store *database.Store, registry *checker.Registry, cfg config.Config, onChange StatusChangeHandler) *Scheduler {
 	workers := cfg.Workers
 	if workers < 1 {
 		workers = 1
@@ -48,6 +59,7 @@ func New(store *database.Store, registry *checker.Registry, cfg config.Config) *
 		dispatchInterval: cfg.DispatchInterval,
 		defaultInterval:  cfg.DefaultInterval,
 		jobs:             make(chan models.Monitor, workers),
+		onChange:         onChange,
 		nextRun:          make(map[int64]time.Time),
 	}
 }
@@ -154,7 +166,9 @@ func (s *Scheduler) processMonitor(ctx context.Context, m models.Monitor) {
 	if prevStatus != "" && prevStatus != res.Status {
 		log.Printf("scheduler: durum değişikliği — %q (id=%d): %s → %s (%s)",
 			m.Name, m.ID, prevStatus, res.Status, res.Message)
-		// TODO(notifier): durum değişikliğinde ilgili bildirim kanalları
-		// tetiklenecek (Notifier milestone'unda bağlanacak).
+		// Bildirimleri worker'ı bloklamadan, ayrı goroutine'de gönder.
+		if s.onChange != nil {
+			go s.onChange.OnStatusChange(m, prevStatus, res.Status, res.Message)
+		}
 	}
 }

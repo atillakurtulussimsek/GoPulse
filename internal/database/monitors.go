@@ -86,6 +86,8 @@ type MonitorStatus struct {
 	Uptime24h float64
 	// Total24h, son 24 saatteki toplam kontrol sayısıdır.
 	Total24h int
+	// ChannelCount, monitöre bağlı bildirim kanalı sayısıdır.
+	ChannelCount int
 }
 
 // ListMonitorsWithStatus, tüm monitörleri son kontrol durumları ve son 24
@@ -103,7 +105,8 @@ func (s *Store) ListMonitorsWithStatus(cutoff time.Time) ([]MonitorStatus, error
 		    (SELECT strftime('%Y-%m-%d %H:%M:%S', cr.checked_at) FROM check_results cr
 		       WHERE cr.monitor_id = m.id ORDER BY cr.checked_at DESC, cr.id DESC LIMIT 1),
 		    (SELECT COUNT(*) FROM check_results cr WHERE cr.monitor_id = m.id AND cr.checked_at >= ?),
-		    (SELECT COUNT(*) FROM check_results cr WHERE cr.monitor_id = m.id AND cr.checked_at >= ? AND cr.status = 'up')
+		    (SELECT COUNT(*) FROM check_results cr WHERE cr.monitor_id = m.id AND cr.checked_at >= ? AND cr.status = 'up'),
+		    (SELECT COUNT(*) FROM monitor_channels mc WHERE mc.monitor_id = m.id)
 		 FROM monitors m
 		 ORDER BY m.id`,
 		formatTime(cutoff), formatTime(cutoff),
@@ -116,20 +119,21 @@ func (s *Store) ListMonitorsWithStatus(cutoff time.Time) ([]MonitorStatus, error
 	var out []MonitorStatus
 	for rows.Next() {
 		var (
-			m           models.Monitor
-			typ         string
-			intervalSec int
-			enabled     int
-			createdAt   string
-			lastStatus  sql.NullString
-			lastLatency sql.NullInt64
-			lastChecked sql.NullString
-			total24h    int
-			up24h       int
+			m            models.Monitor
+			typ          string
+			intervalSec  int
+			enabled      int
+			createdAt    string
+			lastStatus   sql.NullString
+			lastLatency  sql.NullInt64
+			lastChecked  sql.NullString
+			total24h     int
+			up24h        int
+			channelCount int
 		)
 		if err := rows.Scan(
 			&m.ID, &m.Name, &typ, &m.Target, &intervalSec, &enabled, &createdAt,
-			&lastStatus, &lastLatency, &lastChecked, &total24h, &up24h,
+			&lastStatus, &lastLatency, &lastChecked, &total24h, &up24h, &channelCount,
 		); err != nil {
 			return nil, err
 		}
@@ -141,7 +145,7 @@ func (s *Store) ListMonitorsWithStatus(cutoff time.Time) ([]MonitorStatus, error
 			m.CreatedAt = t
 		}
 
-		ms := MonitorStatus{Monitor: m, Total24h: total24h}
+		ms := MonitorStatus{Monitor: m, Total24h: total24h, ChannelCount: channelCount}
 		if lastStatus.Valid {
 			ms.HasResult = true
 			ms.LastStatus = models.Status(lastStatus.String)

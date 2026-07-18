@@ -3,6 +3,7 @@
 package web
 
 import (
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -15,15 +16,17 @@ import (
 	"github.com/atillakurtulussimsek/GoPulse/internal/config"
 	"github.com/atillakurtulussimsek/GoPulse/internal/database"
 	"github.com/atillakurtulussimsek/GoPulse/internal/models"
+	"github.com/atillakurtulussimsek/GoPulse/internal/notifier"
 )
 
 // Server, HTTP katmanını ve bağımlılıklarını tutar.
 type Server struct {
-	cfg       config.Config
-	store     *database.Store
-	auth      *auth.Manager
-	templates *template.Template
-	mux       *http.ServeMux
+	cfg        config.Config
+	store      *database.Store
+	auth       *auth.Manager
+	dispatcher *notifier.Dispatcher
+	templates  *template.Template
+	mux        *http.ServeMux
 }
 
 // authPageData, login/setup şablonlarına aktarılan görünüm modelidir.
@@ -32,24 +35,38 @@ type authPageData struct {
 	Email string
 }
 
+// monitorChannelsData, bir monitörün kanal eşleme formuna aktarılan modeldir.
+type monitorChannelsData struct {
+	MonitorID int64
+	Channels  []channelChecked
+}
+
+// channelChecked, eşleme formunda bir kanalı ve seçili olup olmadığını taşır.
+type channelChecked struct {
+	Channel models.NotificationChannel
+	Checked bool
+}
+
 // dashboardData, panel şablonlarına aktarılan görünüm modelidir.
 type dashboardData struct {
 	Monitors []database.MonitorStatus
+	Channels []models.NotificationChannel
 }
 
 // NewServer, gömülü şablonları ayrıştırır ve rotaları kurar.
-func NewServer(cfg config.Config, store *database.Store) (*Server, error) {
+func NewServer(cfg config.Config, store *database.Store, dispatcher *notifier.Dispatcher) (*Server, error) {
 	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
 
 	s := &Server{
-		cfg:       cfg,
-		store:     store,
-		auth:      auth.New(store, cfg.SessionTTL),
-		templates: tmpl,
-		mux:       http.NewServeMux(),
+		cfg:        cfg,
+		store:      store,
+		auth:       auth.New(store, cfg.SessionTTL),
+		dispatcher: dispatcher,
+		templates:  tmpl,
+		mux:        http.NewServeMux(),
 	}
 	s.routes()
 	return s, nil
@@ -79,6 +96,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /monitors", s.requireAuth(s.handleCreateMonitor))
 	s.mux.HandleFunc("DELETE /monitors/{id}", s.requireAuth(s.handleDeleteMonitor))
 	s.mux.HandleFunc("POST /monitors/{id}/toggle", s.requireAuth(s.handleToggleMonitor))
+
+	// Monitör-kanal eşleme (bildirim yönlendirme).
+	s.mux.HandleFunc("GET /monitors/{id}/channels", s.requireAuth(s.handleMonitorChannelsForm))
+	s.mux.HandleFunc("POST /monitors/{id}/channels", s.requireAuth(s.handleSaveMonitorChannels))
+
+	// Bildirim kanalları yönetimi.
+	s.mux.HandleFunc("GET /partials/channels", s.requireAuth(s.handleChannelTable))
+	s.mux.HandleFunc("GET /channels/fields", s.requireAuth(s.handleChannelFields))
+	s.mux.HandleFunc("POST /channels", s.requireAuth(s.handleCreateChannel))
+	s.mux.HandleFunc("DELETE /channels/{id}", s.requireAuth(s.handleDeleteChannel))
+	s.mux.HandleFunc("POST /channels/{id}/toggle", s.requireAuth(s.handleToggleChannel))
+	s.mux.HandleFunc("POST /channels/{id}/test", s.requireAuth(s.handleTestChannel))
 }
 
 // requireAuth, korumalı bir handler'ı oturum kontrolüyle sarar. Hiç kullanıcı
@@ -339,13 +368,253 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// dashboardData, panel için güncel monitör durum listesini toplar.
+// dashboardData, panel için güncel monitör durum listesini ve kanalları toplar.
 func (s *Server) dashboardData() (dashboardData, error) {
 	monitors, err := s.store.ListMonitorsWithStatus(time.Now().UTC().Add(-24 * time.Hour))
 	if err != nil {
 		return dashboardData{}, err
 	}
-	return dashboardData{Monitors: monitors}, nil
+	channels, err := s.store.ListChannels()
+	if err != nil {
+		return dashboardData{}, err
+	}
+	return dashboardData{Monitors: monitors, Channels: channels}, nil
+}
+
+// renderChannelTable, bildirim kanalı tablosu partial'ını render eder.
+func (s *Server) renderChannelTable(w http.ResponseWriter) {
+	channels, err := s.store.ListChannels()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.templates.ExecuteTemplate(w, "channel_table", dashboardData{Channels: channels}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleChannelTable, kanal tablosunu (HTMX partial) render eder.
+func (s *Server) handleChannelTable(w http.ResponseWriter, r *http.Request) {
+	s.renderChannelTable(w)
+}
+
+// handleChannelFields, seçilen kanal türüne göre yapılandırma alanlarını
+// (HTMX partial) döndürür.
+func (s *Server) handleChannelFields(w http.ResponseWriter, r *http.Request) {
+	typ := r.URL.Query().Get("type")
+	name := "channel_fields_telegram"
+	if typ == notifier.TypeSMTP {
+		name = "channel_fields_smtp"
+	}
+	if err := s.templates.ExecuteTemplate(w, name, nil); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleCreateChannel, formdan yeni bir bildirim kanalı oluşturur.
+func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "form okunamadı", http.StatusBadRequest)
+		return
+	}
+
+	label := strings.TrimSpace(r.FormValue("label"))
+	typ := strings.TrimSpace(r.FormValue("type"))
+	if label == "" {
+		http.Error(w, "kanal etiketi zorunludur", http.StatusBadRequest)
+		return
+	}
+
+	configJSON, err := buildChannelConfig(typ, r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if _, err := s.store.CreateChannel(models.NotificationChannel{
+		Type:    typ,
+		Label:   label,
+		Config:  configJSON,
+		Enabled: true,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.renderChannelTable(w)
+}
+
+// handleDeleteChannel, bir kanalı siler.
+func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "geçersiz id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.DeleteChannel(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.renderChannelTable(w)
+}
+
+// handleToggleChannel, bir kanalın aktif/pasif durumunu tersine çevirir.
+func (s *Server) handleToggleChannel(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "geçersiz id", http.StatusBadRequest)
+		return
+	}
+	ch, ok, err := s.store.GetChannel(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "kanal bulunamadı", http.StatusNotFound)
+		return
+	}
+	if err := s.store.SetChannelEnabled(id, !ch.Enabled); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.renderChannelTable(w)
+}
+
+// handleTestChannel, bir kanala test bildirimi gönderir ve sonucu döndürür.
+func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "geçersiz id", http.StatusBadRequest)
+		return
+	}
+	ch, ok, err := s.store.GetChannel(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "kanal bulunamadı", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.dispatcher.SendTest(ch); err != nil {
+		_, _ = fmt.Fprintf(w, `<span class="text-rose-400">Test başarısız: %s</span>`, template.HTMLEscapeString(err.Error()))
+		return
+	}
+	_, _ = w.Write([]byte(`<span class="text-emerald-400">Test bildirimi gönderildi ✅</span>`))
+}
+
+// handleMonitorChannelsForm, bir monitörün kanal eşleme formunu döndürür.
+func (s *Server) handleMonitorChannelsForm(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "geçersiz id", http.StatusBadRequest)
+		return
+	}
+
+	channels, err := s.store.ListChannels()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	mappedIDs, err := s.store.ListChannelIDsForMonitor(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	mapped := make(map[int64]bool, len(mappedIDs))
+	for _, cid := range mappedIDs {
+		mapped[cid] = true
+	}
+
+	data := monitorChannelsData{MonitorID: id}
+	for _, ch := range channels {
+		data.Channels = append(data.Channels, channelChecked{Channel: ch, Checked: mapped[ch.ID]})
+	}
+	if err := s.templates.ExecuteTemplate(w, "monitor_channels_form", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleSaveMonitorChannels, bir monitörün kanal eşlemesini kaydeder ve
+// güncel monitör tablosunu (+ modalı kapatan OOB parçayı) döndürür.
+func (s *Server) handleSaveMonitorChannels(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "geçersiz id", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "form okunamadı", http.StatusBadRequest)
+		return
+	}
+
+	var channelIDs []int64
+	for _, v := range r.Form["channel"] {
+		if cid, err := strconv.ParseInt(v, 10, 64); err == nil {
+			channelIDs = append(channelIDs, cid)
+		}
+	}
+
+	if err := s.store.SetMonitorChannels(id, channelIDs); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Güncel tabloyu render et; ardından modalı kapatan OOB parçayı ekle.
+	s.renderMonitorTable(w)
+	_, _ = w.Write([]byte(`<div id="modal" hx-swap-oob="true"></div>`))
+}
+
+// buildChannelConfig, kanal türüne göre form alanlarını JSON yapılandırmaya
+// çevirir.
+func buildChannelConfig(typ string, r *http.Request) (string, error) {
+	switch typ {
+	case notifier.TypeTelegram:
+		cfg := map[string]string{
+			"token":   strings.TrimSpace(r.FormValue("token")),
+			"chat_id": strings.TrimSpace(r.FormValue("chat_id")),
+		}
+		if cfg["token"] == "" || cfg["chat_id"] == "" {
+			return "", fmt.Errorf("telegram için token ve chat_id zorunludur")
+		}
+		return marshalJSON(cfg)
+
+	case notifier.TypeSMTP:
+		port, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("port")))
+		var to []string
+		for _, addr := range strings.Split(r.FormValue("to"), ",") {
+			if a := strings.TrimSpace(addr); a != "" {
+				to = append(to, a)
+			}
+		}
+		if strings.TrimSpace(r.FormValue("host")) == "" || port == 0 ||
+			strings.TrimSpace(r.FormValue("from")) == "" || len(to) == 0 {
+			return "", fmt.Errorf("smtp için host, port, from ve en az bir alıcı zorunludur")
+		}
+		cfg := map[string]any{
+			"host":     strings.TrimSpace(r.FormValue("host")),
+			"port":     port,
+			"username": strings.TrimSpace(r.FormValue("username")),
+			"password": r.FormValue("password"),
+			"from":     strings.TrimSpace(r.FormValue("from")),
+			"to":       to,
+		}
+		return marshalJSON(cfg)
+
+	default:
+		return "", fmt.Errorf("geçersiz kanal türü: %q", typ)
+	}
+}
+
+// marshalJSON, bir değeri JSON metnine çevirir.
+func marshalJSON(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // renderMonitorTable, monitör tablosu partial'ını render eder.
@@ -409,6 +678,17 @@ func templateFuncs() template.FuncMap {
 		// intervalText, kontrol aralığını saniye olarak gösterir.
 		"intervalText": func(d time.Duration) string {
 			return fmt.Sprintf("%ds", int(d.Seconds()))
+		},
+		// channelTypeLabel, kanal türünü okunur etikete çevirir.
+		"channelTypeLabel": func(t string) string {
+			switch t {
+			case notifier.TypeTelegram:
+				return "Telegram"
+			case notifier.TypeSMTP:
+				return "E-posta (SMTP)"
+			default:
+				return t
+			}
 		},
 	}
 }

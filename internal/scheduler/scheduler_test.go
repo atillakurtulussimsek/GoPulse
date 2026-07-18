@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -44,7 +45,56 @@ func newTestScheduler(t *testing.T, fc *fakeChecker) (*Scheduler, *database.Stor
 		DispatchInterval: 10 * time.Millisecond,
 		DefaultInterval:  time.Minute,
 	}
-	return New(store, reg, cfg), store
+	return New(store, reg, cfg, nil), store
+}
+
+// fakeHandler, durum değişikliği çağrılarını kaydeder.
+type fakeHandler struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (h *fakeHandler) OnStatusChange(m models.Monitor, prev, curr models.Status, message string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls = append(h.calls, string(prev)+"->"+string(curr))
+}
+
+func (h *fakeHandler) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.calls)
+}
+
+// TestStatusChangeTriggersHandler, durum değişiminde handler'ın çağrıldığını
+// ve ilk kontrolün (önceki durum yok) çağrı üretmediğini doğrular.
+func TestStatusChangeTriggersHandler(t *testing.T) {
+	fc := &fakeChecker{typ: "fake", result: checker.Result{Status: models.StatusUp, Message: "ok"}}
+	h := &fakeHandler{}
+	s, store := newTestScheduler(t, fc)
+	s.onChange = h
+
+	id, _ := store.CreateMonitor(models.Monitor{
+		Name: "M", Type: "fake", Target: "x", Interval: time.Minute, Enabled: true,
+	})
+	m := models.Monitor{ID: id, Name: "M", Type: "fake", Target: "x", Interval: time.Minute, Enabled: true}
+
+	// 1. kontrol: önceki durum yok → handler çağrılmamalı.
+	s.processMonitor(context.Background(), m)
+	// 2. kontrol: aynı durum (up) → değişiklik yok.
+	s.processMonitor(context.Background(), m)
+	// 3. kontrol: down'a geç → handler çağrılmalı.
+	fc.result = checker.Result{Status: models.StatusDown, Message: "hata"}
+	s.processMonitor(context.Background(), m)
+
+	// Handler ayrı goroutine'de çağrıldığı için kısa bekle.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && h.count() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := h.count(); got != 1 {
+		t.Fatalf("tam olarak 1 durum değişikliği bekleniyordu, gelen %d (%v)", got, h.calls)
+	}
 }
 
 // TestProcessMonitorWritesResult, processMonitor'ın kontrol sonucunu DB'ye

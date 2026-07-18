@@ -14,6 +14,7 @@
                 <th class="px-4 py-3 font-medium">Gecikme</th>
                 <th class="px-4 py-3 font-medium">Uptime (24s)</th>
                 <th class="px-4 py-3 font-medium">Son Kontrol</th>
+                <th class="px-4 py-3 font-medium">Bildirim</th>
                 <th class="px-4 py-3 text-right font-medium">İşlem</th>
             </tr>
         </thead>
@@ -35,6 +36,12 @@
                 <td class="px-4 py-3 text-slate-400">{{latencyText .LastLatency}}</td>
                 <td class="px-4 py-3 text-slate-400">{{uptimeText .Total24h .Uptime24h}}</td>
                 <td class="px-4 py-3 text-slate-400">{{timeText .LastCheckedAt}}</td>
+                <td class="px-4 py-3">
+                    <button hx-get="/monitors/{{.Monitor.ID}}/channels" hx-target="#modal" hx-swap="innerHTML"
+                            class="inline-flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 transition hover:border-sky-500 hover:text-sky-300">
+                        🔔 {{.ChannelCount}}
+                    </button>
+                </td>
                 <td class="px-4 py-3">
                     <div class="flex items-center justify-end gap-2">
                         <button hx-post="/monitors/{{.Monitor.ID}}/toggle" hx-target="#monitor-list" hx-swap="innerHTML"

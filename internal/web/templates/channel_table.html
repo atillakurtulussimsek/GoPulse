@@ -1,0 +1,55 @@
+{{define "channel_table"}}
+{{if not .Channels}}
+<div class="rounded-xl border border-dashed border-slate-800 bg-slate-900/30 p-8 text-center text-slate-500">
+    Henüz bildirim kanalı eklenmedi. Yukarıdan Telegram veya e-posta kanalı ekleyebilirsin.
+</div>
+{{else}}
+<div class="overflow-hidden rounded-xl border border-slate-800">
+    <table class="w-full text-left text-sm">
+        <thead class="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+                <th class="px-4 py-3 font-medium">Kanal</th>
+                <th class="px-4 py-3 font-medium">Tür</th>
+                <th class="px-4 py-3 font-medium">Durum</th>
+                <th class="px-4 py-3 text-right font-medium">İşlem</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800">
+            {{range .Channels}}
+            <tr class="bg-slate-900/30 transition hover:bg-slate-900/60 {{if not .Enabled}}opacity-50{{end}}">
+                <td class="px-4 py-3 font-medium text-slate-200">{{.Label}}</td>
+                <td class="px-4 py-3">
+                    <span class="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-400">{{channelTypeLabel .Type}}</span>
+                </td>
+                <td class="px-4 py-3">
+                    {{if .Enabled}}
+                    <span class="inline-flex items-center rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-xs font-medium text-emerald-400 ring-1 ring-inset ring-emerald-500/30">Aktif</span>
+                    {{else}}
+                    <span class="inline-flex items-center rounded-full bg-slate-500/15 px-2.5 py-0.5 text-xs font-medium text-slate-400 ring-1 ring-inset ring-slate-500/30">Pasif</span>
+                    {{end}}
+                </td>
+                <td class="px-4 py-3">
+                    <div class="flex items-center justify-end gap-2">
+                        <span id="chtest-{{.ID}}" class="text-xs text-slate-500"></span>
+                        <button hx-post="/channels/{{.ID}}/test" hx-target="#chtest-{{.ID}}" hx-swap="innerHTML"
+                                class="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 transition hover:border-sky-500 hover:text-sky-300">
+                            Test
+                        </button>
+                        <button hx-post="/channels/{{.ID}}/toggle" hx-target="#channel-list" hx-swap="innerHTML"
+                                class="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 transition hover:border-slate-500 hover:text-white">
+                            {{if .Enabled}}Duraklat{{else}}Sürdür{{end}}
+                        </button>
+                        <button hx-delete="/channels/{{.ID}}" hx-target="#channel-list" hx-swap="innerHTML"
+                                hx-confirm="'{{.Label}}' kanalı silinsin mi?"
+                                class="rounded-md border border-rose-900/60 px-2 py-1 text-xs text-rose-400 transition hover:border-rose-500 hover:text-rose-300">
+                            Sil
+                        </button>
+                    </div>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+{{end}}

@@ -16,6 +16,7 @@ import (
 	"github.com/atillakurtulussimsek/GoPulse/internal/checker"
 	"github.com/atillakurtulussimsek/GoPulse/internal/config"
 	"github.com/atillakurtulussimsek/GoPulse/internal/database"
+	"github.com/atillakurtulussimsek/GoPulse/internal/notifier"
 	"github.com/atillakurtulussimsek/GoPulse/internal/scheduler"
 	"github.com/atillakurtulussimsek/GoPulse/internal/web"
 )
@@ -44,13 +45,17 @@ func main() {
 	registry.Register(checker.NewHTTPChecker(cfg.CheckTimeout))
 	registry.Register(checker.NewTCPChecker(cfg.CheckTimeout))
 
-	// Scheduler'ı başlat: aktif monitörleri aralıklarına göre çalıştırır.
-	sched := scheduler.New(store, registry, cfg)
+	// Bildirim dispatcher'ı: durum değişiminde ilgili kanallara haber verir.
+	dispatcher := notifier.NewDispatcher(store, cfg.CheckTimeout)
+
+	// Scheduler'ı başlat: aktif monitörleri aralıklarına göre çalıştırır ve
+	// durum değişikliklerini dispatcher'a iletir.
+	sched := scheduler.New(store, registry, cfg, dispatcher)
 	go sched.Run(appCtx)
 	log.Printf("scheduler başlatıldı: %d worker, dispatch %s", cfg.Workers, cfg.DispatchInterval)
 
 	// Web sunucusunu oluştur.
-	srv, err := web.NewServer(cfg, store)
+	srv, err := web.NewServer(cfg, store, dispatcher)
 	if err != nil {
 		log.Fatalf("web sunucusu oluşturulamadı: %v", err)
 	}
