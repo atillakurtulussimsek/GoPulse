@@ -10,7 +10,9 @@ TAILWIND    := tailwindcss
 CSS_INPUT   := internal/web/tailwind/input.css
 CSS_OUTPUT  := internal/web/static/app.css
 
-.PHONY: run build tidy fmt vet clean css css-watch
+IMAGE       := gopulse:latest
+
+.PHONY: run build tidy fmt vet test clean css css-watch docker
 
 ## run: Uygulamayı çalıştır
 run:
@@ -31,6 +33,14 @@ fmt:
 ## vet: Statik analiz
 vet:
 	go vet ./...
+
+## test: Testleri çalıştır
+test:
+	go test ./...
+
+## docker: Docker imajını derle (statik binary + distroless)
+docker:
+	docker build -t $(IMAGE) .
 
 ## css: Tailwind CSS'i derle (gömülen app.css'i üretir)
 css:

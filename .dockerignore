@@ -1,0 +1,27 @@
+# Git ve CI
+.git
+.gitignore
+.github
+
+# Yapay zeka yönetimli dosyalar (asla imaja girmez)
+CLAUDE.md
+.claude
+.claudecodesettings
+memory-bank
+
+# Frontend derleme araçları (app.css zaten commit'li ve gömülüdür)
+node_modules
+package.json
+package-lock.json
+
+# Çalışma zamanı verileri ve derleme çıktıları
+data
+*.db
+*.db-shm
+*.db-wal
+bin
+
+# Dokümantasyon (imaj için gereksiz)
+README.md
+LICENSE
+deploy

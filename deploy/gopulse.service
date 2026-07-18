@@ -1,0 +1,44 @@
+# GoPulse — systemd servis birimi
+#
+# Kurulum:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin gopulse
+#   sudo mkdir -p /opt/gopulse /var/lib/gopulse
+#   sudo cp gopulse /opt/gopulse/
+#   sudo chown -R gopulse:gopulse /opt/gopulse /var/lib/gopulse
+#   sudo cp deploy/gopulse.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gopulse
+
+[Unit]
+Description=GoPulse uptime izleme botu
+Documentation=https://github.com/atillakurtulussimsek/GoPulse
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gopulse
+Group=gopulse
+WorkingDirectory=/opt/gopulse
+ExecStart=/opt/gopulse/gopulse
+Restart=on-failure
+RestartSec=5
+
+# Yapılandırma (gerektiğinde değiştirin)
+Environment=GOPULSE_LISTEN_ADDR=:8080
+Environment=GOPULSE_DB_PATH=/var/lib/gopulse/gopulse.db
+# HTTPS arkasında (reverse proxy) çalışıyorsa:
+# Environment=GOPULSE_COOKIE_SECURE=true
+
+# Güvenlik sıkılaştırma
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# SQLite veritabanının yazılabileceği tek dizin
+ReadWritePaths=/var/lib/gopulse
+
+[Install]
+WantedBy=multi-user.target
