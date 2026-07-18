@@ -6,12 +6,15 @@
 #   - Gerekli araçları (git, curl) ve Go'yu (yoksa/eskiyse) hazırlar
 #   - Projeyi GitHub'dan çeker (veya mevcut kopyayı günceller)
 #   - CGO'suz statik binary'yi derler
-#   - Port çakışmasını kontrol eder (dolu ise durur ve boş port önerir;
-#     GOPULSE_AUTO_PORT=true ile otomatik boş port seçer)
+#   - Port çakışmasını kontrol eder; doluysa terminalde bir menü sunar
+#     (otomatik boş port / manuel port / iptal). Terminal yoksa durur ve
+#     öneri verir; GOPULSE_AUTO_PORT=true ile otomatik seçer
+#   - Tercihleri kalıcı bir dosyaya (/etc/gopulse/gopulse.env) kaydeder ve
+#     sonraki çalıştırmalarda hatırlar
 #   - Bir systemd servisi olarak kurar ve başlatır
 #
 # İdempotent: zaten kuruluysa YALNIZCA kodu günceller; veritabanına
-# (/var/lib/gopulse) asla dokunmaz.
+# (/var/lib/gopulse) ve kayıtlı ayarlara dokunmadan kodu tazeler.
 #
 # Kullanım (root/sudo gerekir):
 #   sudo bash install.sh
@@ -33,19 +36,36 @@ INSTALL_DIR="${GOPULSE_INSTALL_DIR:-/opt/gopulse}"   # kaynak + binary
 SRC_DIR="${INSTALL_DIR}/src"                         # git deposu
 BIN_PATH="${INSTALL_DIR}/gopulse"                    # derlenen binary
 DATA_DIR="${GOPULSE_DATA_DIR:-/var/lib/gopulse}"     # veritabanı (KORUNUR)
-DB_PATH="${DATA_DIR}/gopulse.db"
 
 SERVICE_NAME="gopulse"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 
-# Çalışma ayarları (HTTPS reverse proxy arkasında).
-LISTEN_ADDR="${GOPULSE_LISTEN_ADDR:-127.0.0.1:8080}"
-COOKIE_SECURE="${GOPULSE_COOKIE_SECURE:-true}"
+# Kalıcı yapılandırma dosyası. Tercihler burada saklanır ve systemd bu dosyayı
+# EnvironmentFile ile okur. Sonraki çalıştırmalarda buradan hatırlanır.
+ENV_FILE="${GOPULSE_ENV_FILE:-/etc/gopulse/gopulse.env}"
 
-# Seçilen port başka bir process tarafından tutuluyorsa:
-#   false (varsayılan) → durur ve boş bir port önerir
-#   true               → otomatik olarak bir sonraki boş portu seçer
+# Komut satırından AÇIKÇA verilen değerleri yakala (kayıtlı .env'den önceliklidir).
+CLI_LISTEN_ADDR="${GOPULSE_LISTEN_ADDR:-}"
+CLI_COOKIE_SECURE="${GOPULSE_COOKIE_SECURE:-}"
+CLI_DB_PATH="${GOPULSE_DB_PATH:-}"
+
+# Daha önce kaydedilmiş tercihleri yükle ("hatırla").
+if [ -f "$ENV_FILE" ]; then
+	# shellcheck disable=SC1090
+	. "$ENV_FILE"
+fi
+
+# Öncelik: komut satırı > kayıtlı .env > varsayılan.
+LISTEN_ADDR="${CLI_LISTEN_ADDR:-${GOPULSE_LISTEN_ADDR:-127.0.0.1:8080}}"
+COOKIE_SECURE="${CLI_COOKIE_SECURE:-${GOPULSE_COOKIE_SECURE:-true}}"
+DB_PATH="${CLI_DB_PATH:-${GOPULSE_DB_PATH:-${DATA_DIR}/gopulse.db}}"
+
+# Port doluysa ve terminal yoksa (cron/CI) otomatik boş port seçimi.
+# İnteraktif terminalde bunun yerine bir menü sunulur.
 AUTO_PORT="${GOPULSE_AUTO_PORT:-false}"
+
+# İnteraktif menü tamamen kapatılmak istenirse: GOPULSE_NONINTERACTIVE=true
+NONINTERACTIVE="${GOPULSE_NONINTERACTIVE:-false}"
 
 # Go yoksa/eskiyse kurulacak sürüm.
 GO_VERSION="${GOPULSE_GO_VERSION:-1.23.12}"
@@ -180,13 +200,69 @@ find_free_port() {
 	return 1
 }
 
+# İnteraktif bir terminale (kontrol eden tty) erişilebilir mi? curl|bash ile
+# çalıştırılsa bile gerçek bir terminal varsa /dev/tty üzerinden soru sorulabilir.
+tty_available() {
+	[ "$NONINTERACTIVE" != "true" ] || return 1
+	[ -e /dev/tty ] || return 1
+	( : >/dev/tty ) 2>/dev/null || return 1
+	return 0
+}
+
+# LISTEN_ADDR'i host'u koruyarak yeni portla günceller.
+apply_port() {
+	local p="$1"
+	if [ -z "$PORT_HOST" ]; then LISTEN_ADDR=":$p"; else LISTEN_ADDR="${PORT_HOST}:${p}"; fi
+	ok "Port ayarlandı: ${LISTEN_ADDR}"
+}
+
+# Port dolu iken kullanıcıya menü sunar (otomatik / manuel / iptal).
+choose_port_interactive() {
+	local port="$1" suggestion="$2" choice np
+	{
+		echo
+		echo "Port ${port} kullanımda. Ne yapmak istersiniz?"
+		if [ -n "$suggestion" ]; then
+			echo "  1) Otomatik boş port kullan (${suggestion})"
+		else
+			echo "  1) Otomatik boş port kullan (yakında boş port yok)"
+		fi
+		echo "  2) Manuel port gir"
+		echo "  3) İptal"
+		printf "Seçiminiz [1]: "
+	} >/dev/tty
+	read -r choice </dev/tty || choice=""
+	choice="${choice:-1}"
+
+	case "$choice" in
+		1)
+			[ -n "$suggestion" ] || die "Boş port bulunamadı; manuel port deneyin."
+			apply_port "$suggestion"
+			;;
+		2)
+			while true; do
+				printf "Port numarası (1-65535): " >/dev/tty
+				read -r np </dev/tty || np=""
+				if ! printf '%s' "$np" | grep -qE '^[0-9]+$' || [ "$np" -lt 1 ] || [ "$np" -gt 65535 ]; then
+					echo "  Geçersiz port numarası." >/dev/tty; continue
+				fi
+				if port_in_use "$np"; then
+					echo "  ${np} de kullanımda, başka bir port deneyin." >/dev/tty; continue
+				fi
+				apply_port "$np"; break
+			done
+			;;
+		3) die "Kurulum iptal edildi." ;;
+		*) echo "  Geçersiz seçim." >/dev/tty; choose_port_interactive "$port" "$suggestion" ;;
+	esac
+}
+
 # Yapılandırılan portun uygunluğunu doğrular. Kendi servisimiz güncelleniyorsa
-# (portu zaten biz tutuyoruz) çakışma sayılmaz. Başka bir process tutuyorsa
-# AUTO_PORT davranışına göre ya otomatik boş port seçilir ya da durulur.
+# (portu zaten biz tutuyoruz) çakışma sayılmaz. Doluysa: env ile otomatik,
+# terminalde interaktif menü, aksi halde durup öneri sunar.
 check_port() {
-	local port host
-	port="${LISTEN_ADDR##*:}"
-	if [ "$LISTEN_ADDR" = ":$port" ]; then host=""; else host="${LISTEN_ADDR%:*}"; fi
+	PORT_PORT="${LISTEN_ADDR##*:}"
+	if [ "$LISTEN_ADDR" = ":$PORT_PORT" ]; then PORT_HOST=""; else PORT_HOST="${LISTEN_ADDR%:*}"; fi
 
 	# Güncelleme: gopulse servisi zaten çalışıyorsa portu biz tutuyoruzdur.
 	if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
@@ -194,35 +270,60 @@ check_port() {
 		return
 	fi
 
-	if ! port_in_use "$port"; then
+	if ! port_in_use "$PORT_PORT"; then
 		ok "Port uygun: ${LISTEN_ADDR}"
 		return
 	fi
 
-	# Port başka bir process tarafından kullanılıyor.
 	local suggestion
-	suggestion="$(find_free_port "$port" || true)"
+	suggestion="$(find_free_port "$PORT_PORT" || true)"
 
+	# 1) Açık env tercihi: otomatik boş port.
 	if [ "$AUTO_PORT" = "true" ] && [ -n "$suggestion" ]; then
-		if [ -z "$host" ]; then LISTEN_ADDR=":$suggestion"; else LISTEN_ADDR="${host}:${suggestion}"; fi
-		warn "Port $port dolu; GOPULSE_AUTO_PORT=true → otomatik olarak $suggestion kullanılıyor."
-		warn "Reverse proxy hedefini ${LISTEN_ADDR} olarak güncelleyin."
+		apply_port "$suggestion"
+		warn "Port $PORT_PORT dolu; GOPULSE_AUTO_PORT=true → otomatik seçildi."
 		return
 	fi
 
-	printf '\033[1;31mHATA:\033[0m %s\n' "Port $port kullanımda (başka bir process tutuyor)." >&2
+	# 2) İnteraktif terminal: kullanıcıya sor.
+	if tty_available; then
+		choose_port_interactive "$PORT_PORT" "$suggestion"
+		return
+	fi
+
+	# 3) Non-interactive (cron/CI, tty yok): dur ve öner.
+	printf '\033[1;31mHATA:\033[0m %s\n' "Port $PORT_PORT kullanımda (başka bir process tutuyor)." >&2
 	if [ -n "$suggestion" ]; then
-		local sample_host="${host:-127.0.0.1}"
-		echo "  Boş bir port bulundu: $suggestion" >&2
+		echo "  Boş bir port: $suggestion" >&2
 		echo "  Bu portla tekrar çalıştırın:" >&2
-		echo "    sudo GOPULSE_LISTEN_ADDR=${sample_host}:${suggestion} bash install.sh" >&2
+		echo "    sudo GOPULSE_LISTEN_ADDR=${PORT_HOST:-127.0.0.1}:${suggestion} bash install.sh" >&2
 		echo "  veya otomatik seçim için:" >&2
 		echo "    sudo GOPULSE_AUTO_PORT=true bash install.sh" >&2
 	else
-		echo "  Yakında boş port bulunamadı; farklı bir port belirtin:" >&2
-		echo "    sudo GOPULSE_LISTEN_ADDR=127.0.0.1:9090 bash install.sh" >&2
+		echo "  Yakında boş port bulunamadı; farklı bir port belirtin." >&2
 	fi
 	exit 1
+}
+
+# Yönetilen bir anahtarı .env dosyasına yazar/günceller (diğer satırlar korunur).
+set_env_kv() {
+	local key="$1" val="$2"
+	if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+		sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+	else
+		printf '%s=%s\n' "$key" "$val" >> "$ENV_FILE"
+	fi
+}
+
+# Seçilen tercihleri kalıcı .env dosyasına kaydeder ("hatırla").
+save_config() {
+	mkdir -p "$(dirname "$ENV_FILE")"
+	touch "$ENV_FILE"
+	set_env_kv GOPULSE_LISTEN_ADDR   "$LISTEN_ADDR"
+	set_env_kv GOPULSE_DB_PATH       "$DB_PATH"
+	set_env_kv GOPULSE_COOKIE_SECURE "$COOKIE_SECURE"
+	chmod 600 "$ENV_FILE"
+	ok "Yapılandırma kaydedildi: $ENV_FILE"
 }
 
 write_unit() {
@@ -243,9 +344,8 @@ ExecStart=${BIN_PATH}
 Restart=on-failure
 RestartSec=5
 
-Environment=GOPULSE_LISTEN_ADDR=${LISTEN_ADDR}
-Environment=GOPULSE_DB_PATH=${DB_PATH}
-Environment=GOPULSE_COOKIE_SECURE=${COOKIE_SECURE}
+# Ayarlar kalıcı yapılandırma dosyasından okunur (script tarafından yönetilir).
+EnvironmentFile=${ENV_FILE}
 
 # Güvenlik sıkılaştırma
 NoNewPrivileges=true
@@ -305,6 +405,7 @@ main() {
 	fetch_source
 	build_binary
 	check_port
+	save_config
 	write_unit
 	set_permissions
 	start_service

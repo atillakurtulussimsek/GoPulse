@@ -73,13 +73,28 @@ ve ayarlanabilir değişkenler için [`deploy/install.sh`](deploy/install.sh)
 başındaki yapılandırma bölümüne bakın.
 
 **Port çakışması:** Seçilen port başka bir process tarafından kullanılıyorsa
-script durur ve boş bir port önerir. Farklı port vermek için:
+script bir **menü** sunar (terminalde) — otomatik boş port, manuel port veya
+iptal:
+
+```
+Port 8080 kullanımda. Ne yapmak istersiniz?
+  1) Otomatik boş port kullan (8081)
+  2) Manuel port gir
+  3) İptal
+Seçiminiz [1]:
+```
+
+İstersen sormadan da geçebilirsin:
 
 ```bash
-curl -fsSL .../install.sh | sudo GOPULSE_LISTEN_ADDR=127.0.0.1:9090 bash
-# veya otomatik boş port seçimi için:
-curl -fsSL .../install.sh | sudo GOPULSE_AUTO_PORT=true bash
+curl -fsSL .../install.sh | sudo GOPULSE_LISTEN_ADDR=127.0.0.1:9090 bash  # belirli port
+curl -fsSL .../install.sh | sudo GOPULSE_AUTO_PORT=true bash              # otomatik boş port
 ```
+
+**Kalıcı tercihler:** Seçilen port ve ayarlar `/etc/gopulse/gopulse.env`
+dosyasına kaydedilir; sonraki çalıştırmalarda **hatırlanır** (yeniden sorulmaz).
+Bu dosyayı elle düzenleyip `sudo systemctl restart gopulse` da diyebilirsin.
+Komut satırında açıkça verilen değer, kayıtlı değeri geçersiz kılar.
 
 > HTTPS reverse proxy (nginx/Caddy) arkasında çalışacak şekilde ayarlıdır
 > (`GOPULSE_COOKIE_SECURE=true`, `127.0.0.1:8080`).
