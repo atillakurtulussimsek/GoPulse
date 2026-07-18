@@ -13,8 +13,10 @@
 #     sonraki çalıştırmalarda hatırlar
 #   - Bir systemd servisi olarak kurar ve başlatır
 #
-# İdempotent: zaten kuruluysa YALNIZCA kodu günceller; veritabanına
-# (/var/lib/gopulse) ve kayıtlı ayarlara dokunmadan kodu tazeler.
+# Zaten kuruluysa ne yapılacağını sorar (terminalde menü, ya da GOPULSE_ACTION):
+#   update    → yalnızca kodu günceller; veri ve ayarlar korunur (varsayılan)
+#   reinstall → SIFIRDAN kurar; veri/ayar/kod tümüyle silinir (onay ister)
+#   uninstall → servisi ve dosyaları kaldırır (veritabanı isteğe bağlı silinir)
 #
 # Kullanım (root/sudo gerekir):
 #   sudo bash install.sh
@@ -66,6 +68,10 @@ AUTO_PORT="${GOPULSE_AUTO_PORT:-false}"
 
 # İnteraktif menü tamamen kapatılmak istenirse: GOPULSE_NONINTERACTIVE=true
 NONINTERACTIVE="${GOPULSE_NONINTERACTIVE:-false}"
+
+# Kuruluysa yapılacak işlem: update | reinstall | uninstall.
+# Boş bırakılırsa (ve terminal varsa) kullanıcıya sorulur.
+ACTION="${GOPULSE_ACTION:-}"
 
 # Go yoksa/eskiyse kurulacak sürüm.
 GO_VERSION="${GOPULSE_GO_VERSION:-1.23.12}"
@@ -384,19 +390,135 @@ start_service() {
 	fi
 }
 
+# GoPulse sistemde kurulu mu? (kaynak, birim veya binary'den biri yeterli)
+is_installed() {
+	[ -d "${SRC_DIR}/.git" ] || [ -f "$UNIT_PATH" ] || [ -x "$BIN_PATH" ]
+}
+
+# Kurulu bir sistemde yapılacak işlemi belirler: update | reinstall | uninstall.
+# Öncelik: GOPULSE_ACTION env > interaktif menü > (tty yoksa) güvenli 'update'.
+choose_action() {
+	if ! is_installed; then
+		ACTION="install"
+		return
+	fi
+	if [ -n "${ACTION:-}" ]; then
+		case "$ACTION" in
+			update|reinstall|uninstall) return ;;
+			*) die "Geçersiz GOPULSE_ACTION: '$ACTION' (update|reinstall|uninstall)" ;;
+		esac
+	fi
+	if tty_available; then
+		{
+			echo
+			echo "GoPulse zaten kurulu. Ne yapmak istersiniz?"
+			echo "  1) Güncelle    (kodu yenile, verileri koru)"
+			echo "  2) Yeniden kur (SIFIRDAN — tüm veriler ve ayarlar silinir)"
+			echo "  3) Kaldır      (servisi ve dosyaları kaldır)"
+			echo "  4) İptal"
+			printf "Seçiminiz [1]: "
+		} >/dev/tty
+		local c; read -r c </dev/tty || c=""
+		case "${c:-1}" in
+			1) ACTION="update" ;;
+			2) ACTION="reinstall" ;;
+			3) ACTION="uninstall" ;;
+			4) die "İşlem iptal edildi." ;;
+			*) die "Geçersiz seçim." ;;
+		esac
+	else
+		ACTION="update"
+		warn "Etkileşimsiz mod: varsayılan işlem 'güncelle'."
+		warn "Değiştirmek için: GOPULSE_ACTION=update|reinstall|uninstall"
+	fi
+}
+
+# Yıkıcı (geri alınamaz) işlemler için açık onay ister.
+confirm_destructive() {
+	local what="$1"
+	[ "${GOPULSE_ASSUME_YES:-false}" = "true" ] && return
+	if tty_available; then
+		{
+			echo
+			echo "!!! DİKKAT: Bu işlem ${what} KALICI olarak siler (geri alınamaz)."
+			printf "Devam etmek için 'evet' yazın: "
+		} >/dev/tty
+		local a; read -r a </dev/tty || a=""
+		[ "$a" = "evet" ] || die "Onaylanmadı — iptal edildi."
+	else
+		die "Yıkıcı işlem için onay gerekli. Etkileşimsiz modda GOPULSE_ASSUME_YES=true verin."
+	fi
+}
+
+# GoPulse'u tümüyle kaldırır. Veritabanı yalnızca açıkça istenirse silinir.
+do_uninstall() {
+	log "GoPulse KALDIRILIYOR"
+
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+		systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+		rm -f "$UNIT_PATH"
+		systemctl daemon-reload 2>/dev/null || true
+	fi
+	rm -rf "$INSTALL_DIR"
+	rm -f "$ENV_FILE"
+	rmdir "$(dirname "$ENV_FILE")" 2>/dev/null || true
+	ok "Servis, binary, kaynak ve ayar dosyaları kaldırıldı."
+
+	# Veritabanı: varsayılan olarak KORUNUR; istenirse silinir.
+	local purge="${GOPULSE_PURGE_DATA:-}"
+	if [ -z "$purge" ]; then
+		if tty_available; then
+			printf "Veritabanı da silinsin mi? (%s) [e/H]: " "$DATA_DIR" >/dev/tty
+			local a; read -r a </dev/tty || a=""
+			case "$a" in [eE]*) purge="true" ;; *) purge="false" ;; esac
+		else
+			purge="false"
+		fi
+	fi
+	if [ "$purge" = "true" ]; then
+		rm -rf "$DATA_DIR"
+		ok "Veritabanı silindi: $DATA_DIR"
+	else
+		ok "Veritabanı korundu: $DATA_DIR"
+	fi
+
+	echo
+	ok "GoPulse kaldırıldı."
+	echo "   Not: '$APP_USER' sistem kullanıcısı bırakıldı."
+	echo "   Silmek için: sudo userdel $APP_USER"
+	exit 0
+}
+
+# Sıfırdan yeniden kurulum: TÜM veri, ayar ve kod silinir, sonra taze kurulur.
+do_reinstall() {
+	log "GoPulse YENİDEN KURULUYOR (sıfırdan)"
+	confirm_destructive "veritabanı (${DATA_DIR}) ve tüm ayarlar dâhil mevcut kurulumu"
+
+	command -v systemctl >/dev/null 2>&1 && { systemctl stop "$SERVICE_NAME" 2>/dev/null || true; }
+	rm -rf "$INSTALL_DIR" "$DATA_DIR"
+	rm -f "$ENV_FILE"
+	ok "Eski kurulum tümüyle temizlendi."
+
+	# "Sıfırdan": kayıtlı ayarları yok say, varsayılanlara dön (CLI hâlâ önceliklidir).
+	LISTEN_ADDR="${CLI_LISTEN_ADDR:-127.0.0.1:8080}"
+	COOKIE_SECURE="${CLI_COOKIE_SECURE:-true}"
+	DB_PATH="${CLI_DB_PATH:-${DATA_DIR}/gopulse.db}"
+}
+
 # ----------------------------------------------------------------------------
 # Akış
 # ----------------------------------------------------------------------------
 main() {
 	require_root
+	choose_action
 
-	local first_install="no"
-	[ -d "${SRC_DIR}/.git" ] || first_install="yes"
-	if [ "$first_install" = "yes" ]; then
-		log "GoPulse KURULUYOR (ilk kurulum)"
-	else
-		log "GoPulse GÜNCELLENİYOR (veriye dokunulmaz)"
-	fi
+	case "$ACTION" in
+		uninstall) do_uninstall ;;   # kendi içinde çıkar
+		reinstall) do_reinstall ;;   # temizler, ardından taze kuruluma düşer
+		update)    log "GoPulse GÜNCELLENİYOR (veri ve ayarlar korunur)" ;;
+		install)   log "GoPulse KURULUYOR (ilk kurulum)" ;;
+	esac
 
 	ensure_tool git
 	ensure_tool curl
@@ -412,8 +534,14 @@ main() {
 
 	echo
 	ok "Tamamlandı."
+	echo "   İşlem          : ${ACTION}"
 	echo "   Dinleme adresi : ${LISTEN_ADDR}"
-	echo "   Veritabanı     : ${DB_PATH} (korundu)"
+	if [ "$ACTION" = "update" ]; then
+		echo "   Veritabanı     : ${DB_PATH} (korundu)"
+	else
+		echo "   Veritabanı     : ${DB_PATH}"
+	fi
+	echo "   Ayar dosyası   : ${ENV_FILE}"
 	echo "   Servis         : systemctl status ${SERVICE_NAME}"
 	echo "   Günlükler      : journalctl -u ${SERVICE_NAME} -f"
 	if [ "$COOKIE_SECURE" = "true" ]; then
@@ -421,7 +549,7 @@ main() {
 		echo "   Not: GOPULSE_COOKIE_SECURE=true. GoPulse'u bir HTTPS reverse proxy"
 		echo "   (nginx/Caddy) arkasında yayınlayın; aksi halde panele giriş yapılamaz."
 	fi
-	if [ "$first_install" = "yes" ]; then
+	if [ "$ACTION" = "install" ] || [ "$ACTION" = "reinstall" ]; then
 		echo
 		echo "   İlk kez: tarayıcıdan panele girip /setup ekranından yönetici"
 		echo "   hesabını oluşturun."

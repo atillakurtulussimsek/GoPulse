@@ -66,11 +66,33 @@ servisi olarak kurar ve başlatır):
 curl -fsSL https://raw.githubusercontent.com/atillakurtulussimsek/GoPulse/main/deploy/install.sh | sudo bash
 ```
 
-Script **idempotent**'tir: proje zaten kuruluysa yalnızca kodu günceller
-(git pull + yeniden derleme + servis yeniden başlatma) ve **veritabanına
-(`/var/lib/gopulse`) dokunmaz**. Go kurulu değilse otomatik kurar. Ayrıntılar
-ve ayarlanabilir değişkenler için [`deploy/install.sh`](deploy/install.sh)
-başındaki yapılandırma bölümüne bakın.
+Proje **zaten kuruluysa** script ne yapmak istediğini sorar (terminalde menü):
+
+```
+GoPulse zaten kurulu. Ne yapmak istersiniz?
+  1) Güncelle    (kodu yenile, verileri koru)
+  2) Yeniden kur (SIFIRDAN — tüm veriler ve ayarlar silinir)
+  3) Kaldır      (servisi ve dosyaları kaldır)
+  4) İptal
+```
+
+| Mod | Davranış |
+|-----|----------|
+| **Güncelle** (varsayılan) | git pull + yeniden derleme + servis restart. **Veri ve ayarlar korunur.** |
+| **Yeniden kur** | Kod, ayar ve **veritabanı dâhil her şey silinir**, sıfırdan kurulur. `'evet'` onayı ister. |
+| **Kaldır** | Servis + dosyalar kaldırılır. Veritabanının silinip silinmeyeceği ayrıca sorulur (varsayılan: **korunur**). |
+
+Terminal yoksa (cron/CI) mod, ortam değişkeniyle seçilir ve yıkıcı işlemler
+onay gerektirir:
+
+```bash
+sudo GOPULSE_ACTION=update    bash install.sh   # varsayılan
+sudo GOPULSE_ACTION=reinstall GOPULSE_ASSUME_YES=true bash install.sh
+sudo GOPULSE_ACTION=uninstall GOPULSE_PURGE_DATA=true bash install.sh
+```
+
+Go kurulu değilse otomatik kurar. Ayrıntılar ve ayarlanabilir değişkenler için
+[`deploy/install.sh`](deploy/install.sh) başındaki yapılandırma bölümüne bakın.
 
 **Port çakışması:** Seçilen port başka bir process tarafından kullanılıyorsa
 script bir **menü** sunar (terminalde) — otomatik boş port, manuel port veya
